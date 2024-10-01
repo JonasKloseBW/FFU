@@ -4206,10 +4206,14 @@ try {
         Writelog "`$UpdateLatestNet is set to true, checking for latest .NET Framework"
         if ($WindowsRelease -le 11) {
             $Name = "Cumulative update for .net framework windows $WindowsRelease $WindowsVersion $WindowsArch -preview"
-        } elseif ($WindowsRelease -le 2022) {
-            $Name = "Cumulative update for .net framework windows 10 $WindowsVersion for $WindowsArch -preview"
+        } elseif ($WindowsRelease -eq 2016) {
+            $Name = '"Cumulative Update for .NET Framework" "4.8" for Windows 10 Version ' + $WindowsVersion + ' x64'
+        } elseif ($WindowsRelease -eq 2019) {
+            $Name = '"Cumulative Update for .NET Framework" "3.5, 4.7.2 and 4.8" for Windows 10 Version ' + $WindowsVersion + ' x64'
+        } elseif ($WindowsRelease -eq 2022) {
+            $Name = '"Cumulative Update for .NET Framework" "3.5, 4.8 and 4.8.1" for Windows 10 Version ' + $WindowsVersion + ' x64'
         } else {
-            $Name = "Cumulative update for .net framework windows 11 $WindowsVersion for $WindowsArch -preview"
+            $Name = '"Cumulative Update for .NET Framework" "3.5, 4.8.1" for Windows 11 Version ' + $WindowsVersion + ' x64'
         }
         #Check if $KBPath exists, if not, create it
         If (-not (Test-Path -Path $KBPath)) {
