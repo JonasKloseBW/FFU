@@ -318,6 +318,7 @@ param(
     [bool]$UpdateLatestMSRT,
     [bool]$UpdateEdge,
     [bool]$UpdateOneDrive,
+    [bool]$AllowUpdateCaching,
     [bool]$AllowVHDXCaching,
     [bool]$CopyPPKG,
     [bool]$CopyUnattend,
@@ -399,6 +400,7 @@ if (-not $VHDXPath) { $VHDXPath = "$VMPath\$VMName.vhdx" }
 if (-not $FFUCaptureLocation) { $FFUCaptureLocation = "$FFUDevelopmentPath\FFU" }
 if (-not $LogFile) { $LogFile = "$FFUDevelopmentPath\FFUDevelopment.log" }
 if (-not $KBPath) { $KBPath = "$FFUDevelopmentPath\KB" }
+if (-not $KBCachePath) { $KBCachePath = "$FFUDevelopmentPath\KBCache" }
 if (-not $DefenderPath) { $DefenderPath = "$AppsPath\Defender" }
 if (-not $MSRTPath) { $MSRTPath = "$AppsPath\MSRT" }
 if (-not $OneDrivePath) { $OneDrivePath = "$AppsPath\OneDrive" }
@@ -2326,6 +2328,53 @@ function Get-LatestWindowsKB {
     return $kbArticle
 }
 
+function Find-CachedKB {
+    param(
+        [string]$Link,
+        [string]$Path 
+    )
+
+    WriteLog "Searching for cached download of $Link"
+    $fileHash = ($Link | Select-String -Pattern "(?<=^[^_]*_).*(?=\..*$)").Matches[0].Value
+    $file = [System.IO.FileInfo]::new((Join-Path -Path $KBCachePath -ChildPath ($Link -split '/')[-1]))
+
+    if ($file.Exists) {
+        if ((Get-FileHash -Path $file.FullName -Algorithm SHA1).Hash -eq $fileHash) {
+            WriteLog "Found cached download of $Link as $($file.FullName)"
+            Robocopy.exe $($KBCachePath) $($Path) $file.Name /E /R:5 /W:5 /J /Copy:DAT | ForEach-Object { }
+            return $file.Name
+        }
+    }
+
+    return ""
+}
+
+function Invoke-KBDownload {
+    param (
+        [string]$Link,
+        [string]$WindowsArch,
+        [string]$Path
+    )
+
+    if ($AllowUpdateCaching) 
+        $fileName = Find-CachedKB -Link $Link -Path $Path
+        if (![string]::IsNullOrEmpty($fileName)) {
+            Writelog "Found $Link for $WindowsArch in $KBCachePath"
+            Writelog "Returning $fileName"
+            return $fileName
+        }
+    }
+    Writelog "Downloading $Link for $WindowsArch to $Path"
+    Start-BitsTransferWithRetry -Source $link -Destination $Path
+    $fileName = ($link -split '/')[-1]
+    if ($AllowUpdateCaching) {
+        WriteLog "Caching $fileName for later use"
+        Robocopy.exe $($Path) $($KBCachePath) $fileName /E /R:5 /W:5 /J /Copy:DAT | ForEach-Object { }
+    }
+    Writelog "Returning $fileName"
+    return $fileName
+}
+
 function Save-KB {
     [CmdletBinding()]
     param(
@@ -2352,19 +2401,13 @@ function Save-KB {
                     WriteLog "Link: $link matches security"
                     if ($WindowsArch -eq 'x64') {
                         if ($link -match 'securityhealthsetup_e1') {
-                            Writelog "Downloading $Link for $WindowsArch to $Path"
-                            Start-BitsTransferWithRetry -Source $link -Destination $Path
-                            $fileName = ($link -split '/')[-1]
-                            Writelog "Returning $fileName"
+                            $fileName = Invoke-KBDownload -Link $link -WindowsArch $WindowsArch -Path $Path
                             break
                         }
                     }
                     if ($WindowsArch -eq 'arm64') {
                         if ($link -match 'securityhealthsetup_25') {
-                            Writelog "Downloading $Link for $WindowsArch to $Path"
-                            Start-BitsTransferWithRetry -Source $link -Destination $Path
-                            $fileName = ($link -split '/')[-1]
-                            Writelog "Returning $fileName"
+                            $fileName = Invoke-KBDownload -Link $link -WindowsArch $WindowsArch -Path $Path
                             break
                         }
                     }
@@ -2374,10 +2417,7 @@ function Save-KB {
             if ($link -match 'x64' -or $link -match 'amd64') {
                 if($WindowsArch -is [array]) {
                     if ($link -match $WindowsArch[0] -or $link -match $WindowsArch[1]) {
-                        Writelog "Downloading $Link for $WindowsArch to $Path"
-                        Start-BitsTransferWithRetry -Source $link -Destination $Path
-                        $fileName = ($link -split '/')[-1]
-                        Writelog "Returning $fileName"
+                        $fileName = Invoke-KBDownload -Link $link -WindowsArch $WindowsArch -Path $Path
                         break
                     }
                 }
@@ -2385,10 +2425,7 @@ function Save-KB {
             }
             if ($link -match 'arm64') {
                 if ($WindowsArch -eq 'arm64') {
-                    Writelog "Downloading $Link for $WindowsArch to $Path"
-                    Start-BitsTransferWithRetry -Source $link -Destination $Path
-                    $fileName = ($link -split '/')[-1]
-                    Writelog "Returning $fileName"
+        	    $fileName = Invoke-KBDownload -Link $link -WindowsArch $WindowsArch -Path $Path
                     break
                 }
             }                
@@ -3616,6 +3653,11 @@ function Get-FFUEnvironment {
     Clear-InstallAppsandSysprep
     #Clean up $KBPath
     If (Test-Path -Path $KBPath) {
+         if ($AllowUpdateCaching) {
+            WriteLog "Copying $KBPath content to $KBCachePath for cache retrieval"
+            Robocopy.exe $($KBPath) $($KBCachePath) /E /Z /Copy:DAT
+            WriteLog "Copy complete"
+        }
         WriteLog "Removing $KBPath"
         Remove-Item -Path $KBPath -Recurse -Force -ErrorAction SilentlyContinue
         WriteLog 'Removal complete'
@@ -4364,6 +4406,11 @@ try {
             # Add-WindowsPackage -Path $WindowsPartition -PackagePath $KBPath -PreventPending | Out-Null
             Add-WindowsPackage -Path $WindowsPartition -PackagePath $KBPath | Out-Null
             WriteLog "KBs added to $WindowsPartition"
+            if ($AllowUpdateCaching) {
+                WriteLog "Copying downloaded KBs from $KBPath to $KBCachePath"
+                Robocopy.exe $($KBPath) $($KBCachePath) /E /COPY:DAT /R:5 /W:5 /J
+                WriteLog "Copy complete"
+            }
             if ($AllowVHDXCaching) {
                 $cachedVHDXInfo = [VhdxCacheItem]::new()
                 $includedUpdates = Get-ChildItem -Path $KBPath -File
